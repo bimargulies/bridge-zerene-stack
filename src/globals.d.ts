@@ -32,5 +32,7 @@ declare class MenuElement {
 declare var app: {
   document: { selections: Thumbnail[]; presentationPath: string };
   system(cmd: string): string;
+  scheduleTask(code: string, delayMs: number, repeat: boolean): number;
 };
 declare function alert(msg: string): void;
+declare class Window { constructor(type: string, title?: string); }

@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const base = join(homedir(), "Library/Application Support/Adobe");
 const src = fileURLToPath(new URL("../dist/ZereneStack.jsx", import.meta.url));
-const bridges = readdirSync(base).filter((d) => d.startsWith("Bridge"));
+const bridges = readdirSync(base, { withFileTypes: true })
+	.filter((d) => d.isDirectory() && d.name.startsWith("Bridge"))
+	.map((d) => d.name);
 if (bridges.length === 0) {
 	console.error(`No Bridge folder found under ${base}`);
 	process.exit(1);

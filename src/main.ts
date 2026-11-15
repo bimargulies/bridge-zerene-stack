@@ -72,13 +72,74 @@ function writeTextFile(path: string, text: string): void {
 }
 
 // DMap contrast threshold, as a percentile. Without a fixed value Zerene stops to ask (default 30).
-const DMAP_CONTRAST_PERCENTILE = 30;
+const DEFAULT_PERCENTILE = 30;
+
+interface Settings { percentile: number; askEachTime: boolean; }
+
+const SETTINGS_PATH = "~/Library/Application Support/Adobe/BridgeZereneStack.json";
+
+function loadSettings(): Settings {
+  const s: Settings = { percentile: DEFAULT_PERCENTILE, askEachTime: true };
+  try {
+    const f = new File(SETTINGS_PATH);
+    if (f.exists && f.open("r")) {
+      const text = f.read();
+      f.close();
+      const p = /"percentile"\s*:\s*([0-9.]+)/.exec(text);
+      if (p) {
+        const v = parseFloat(p[1]);
+        if (v >= 0 && v <= 100) { s.percentile = v; }
+      }
+      const a = /"askEachTime"\s*:\s*(true|false)/.exec(text);
+      if (a) { s.askEachTime = a[1] === "true"; }
+    }
+  } catch (e) { /* fall back to defaults */ }
+  return s;
+}
+
+function saveSettings(s: Settings): void {
+  writeTextFile(SETTINGS_PATH,
+    '{\n  "percentile": ' + s.percentile + ',\n  "askEachTime": ' + (s.askEachTime ? "true" : "false") + '\n}\n');
+}
+
+/** Modal dialog for the settings. Returns the new (already saved) settings, or null if cancelled. */
+function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
+  // @ts-ignore  ScriptUI
+  const w: any = new Window("dialog", "Zerene Stacker settings");
+  w.orientation = "column";
+  w.alignChildren = "left";
+  const row = w.add("group");
+  row.add("statictext", undefined, "DMap contrast threshold (percentile, 0-100):");
+  const field = row.add("edittext", undefined, String(cur.percentile));
+  field.characters = 6;
+  field.active = true;
+  const ask = w.add("checkbox", undefined, "Ask each time");
+  ask.value = cur.askEachTime;
+  const buttons = w.add("group");
+  buttons.alignment = "right";
+  const okBtn = buttons.add("button", undefined, okLabel, { name: "ok" });
+  const cancelBtn = buttons.add("button", undefined, "Cancel", { name: "cancel" });
+  // Close explicitly: the implicit close of "ok"/"cancel" buttons left the dialog on screen in Bridge.
+  let result: Settings | null = null;
+  okBtn.onClick = function () {
+    const v = parseFloat(field.text);
+    if (isNaN(v) || v < 0 || v > 100) { alert("Enter a number between 0 and 100."); return; }
+    result = { percentile: v, askEachTime: !!ask.value };
+    w.close(1);
+  };
+  cancelBtn.onClick = function () { w.close(0); };
+  w.show();
+  if (result !== null) {
+    try { saveSettings(result); } catch (e) { alert("Could not save settings: " + e); }
+  }
+  return result;
+}
 
 /** One Zerene batch task: save 16-bit LZW TIFF. Task codes: 1 = Align+Stack All (PMax), 2 = (DMap). */
-function zereneTaskXml(code: number): string {
+function zereneTaskXml(code: number, percentile: number): string {
   const dmap = code === 2
     ? '              <DepthMapControl.UseFixedContrastThresholdPercentile value="true" />\n' +
-      '              <DepthMapControl.ContrastThresholdPercentile value="' + DMAP_CONTRAST_PERCENTILE + '.0" />\n'
+      '              <DepthMapControl.ContrastThresholdPercentile value="' + percentile.toFixed(1) + '" />\n'
     : "";
   return '          <Task>\n' +
     '            <OutputImageDispositionCode value="2" />\n' +
@@ -97,7 +158,7 @@ function zereneTaskXml(code: number): string {
  * move both outputs up into stackDir and delete tiffDir. Runs as a detached shell script so
  * Bridge's UI is not blocked. tiffDir is only deleted if both outputs were produced.
  */
-function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string): void {
+function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, percentile: number): void {
   const cfg = new File("~/Library/Preferences/ZereneStacker/zerenstk.launchcmd");
   let cmd = "";
   if (cfg.exists && cfg.open("r")) { cmd = cfg.read().replace(/[\r\n]+$/, ""); cfg.close(); }
@@ -110,7 +171,7 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string): vo
     '<?xml version="1.0" encoding="UTF-8"?>\n<ZereneStackerBatchScript>\n  <BatchQueue>\n    <Batches length="1">\n' +
     '      <Batch>\n        <Sources length="1">\n          <Source value="' + xmlEsc(tiffDir) + '" />\n' +
     '        </Sources>\n        <ProjectDispositionCode value="101" />\n        <Tasks length="2">\n' +
-    zereneTaskXml(1) + zereneTaskXml(2) +
+    zereneTaskXml(1, percentile) + zereneTaskXml(2, percentile) +
     '        </Tasks>\n      </Batch>\n    </Batches>\n  </BatchQueue>\n</ZereneStackerBatchScript>\n');
 
   const notify = function (msg: string): string {
@@ -145,6 +206,17 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string): vo
 }
 
 function convertFolderAndAutoStack(): void {
+  let settings = loadSettings();
+  if (settings.askEachTime) {
+    const chosen = showSettingsDialog(settings, "Start");
+    if (chosen === null) { return; }  // Cancel aborts the run
+    settings = chosen;
+  }
+  // Let the dialog finish closing and repaint before the work below blocks Bridge's UI thread.
+  app.scheduleTask("convertFolderNow(" + settings.percentile + ")", 300, false);
+}
+
+function convertFolderNow(percentile: number): void {
   const dir = app.document.presentationPath;
   const folder = new Folder(dir);
   const files: string[] = [];
@@ -174,7 +246,7 @@ function convertFolderAndAutoStack(): void {
       if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
     }
     try {
-      autoStackInZerene(folder.fsName, tiffDir, stamp);
+      autoStackInZerene(folder.fsName, tiffDir, stamp, percentile);
     } catch (e) {
       alert("Could not start Zerene auto-stack: " + e);
     }
@@ -191,4 +263,11 @@ if (BridgeTalk.appName === "bridge") {
     "zereneAutoStack"
   );
   item.onSelect = convertFolderAndAutoStack;
+  const cfgItem = MenuElement.create(
+    "command",
+    "Zerene Stacker Settings...",
+    "at the end of Tools/Photoshop",
+    "zereneSettings"
+  );
+  cfgItem.onSelect = function () { showSettingsDialog(loadSettings(), "Save"); };
 }
