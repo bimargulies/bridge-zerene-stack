@@ -74,12 +74,12 @@ function writeTextFile(path: string, text: string): void {
 // DMap contrast threshold, as a percentile. Without a fixed value Zerene stops to ask (default 30).
 const DEFAULT_PERCENTILE = 30;
 
-interface Settings { percentile: number; askEachTime: boolean; }
+interface Settings { percentile: number; askEachTime: boolean; addDescription: boolean; }
 
 const SETTINGS_PATH = "~/Library/Application Support/Adobe/BridgeZereneStack.json";
 
 function loadSettings(): Settings {
-  const s: Settings = { percentile: DEFAULT_PERCENTILE, askEachTime: true };
+  const s: Settings = { percentile: DEFAULT_PERCENTILE, askEachTime: true, addDescription: true };
   try {
     const f = new File(SETTINGS_PATH);
     if (f.exists && f.open("r")) {
@@ -92,6 +92,8 @@ function loadSettings(): Settings {
       }
       const a = /"askEachTime"\s*:\s*(true|false)/.exec(text);
       if (a) { s.askEachTime = a[1] === "true"; }
+      const d = /"addDescription"\s*:\s*(true|false)/.exec(text);
+      if (d) { s.addDescription = d[1] === "true"; }
     }
   } catch (e) { /* fall back to defaults */ }
   return s;
@@ -99,7 +101,8 @@ function loadSettings(): Settings {
 
 function saveSettings(s: Settings): void {
   writeTextFile(SETTINGS_PATH,
-    '{\n  "percentile": ' + s.percentile + ',\n  "askEachTime": ' + (s.askEachTime ? "true" : "false") + '\n}\n');
+    '{\n  "percentile": ' + s.percentile + ',\n  "askEachTime": ' + (s.askEachTime ? "true" : "false") +
+    ',\n  "addDescription": ' + (s.addDescription ? "true" : "false") + '\n}\n');
 }
 
 /** Modal dialog for the settings. Returns the new (already saved) settings, or null if cancelled. */
@@ -113,6 +116,8 @@ function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
   const field = row.add("edittext", undefined, String(cur.percentile));
   field.characters = 6;
   field.active = true;
+  const desc = w.add("checkbox", undefined, "Set IPTC Description to DATE/stack-nnn (needs exiftool)");
+  desc.value = cur.addDescription;
   const ask = w.add("checkbox", undefined, "Ask each time");
   ask.value = cur.askEachTime;
   const buttons = w.add("group");
@@ -124,7 +129,7 @@ function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
   okBtn.onClick = function () {
     const v = parseFloat(field.text);
     if (isNaN(v) || v < 0 || v > 100) { alert("Enter a number between 0 and 100."); return; }
-    result = { percentile: v, askEachTime: !!ask.value };
+    result = { percentile: v, askEachTime: !!ask.value, addDescription: !!desc.value };
     w.close(1);
   };
   cancelBtn.onClick = function () { w.close(0); };
@@ -158,7 +163,7 @@ function zereneTaskXml(code: number, percentile: number): string {
  * move both outputs up into stackDir and delete tiffDir. Runs as a detached shell script so
  * Bridge's UI is not blocked. tiffDir is only deleted if both outputs were produced.
  */
-function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, percentile: number): void {
+function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, percentile: number, addDescription: boolean): void {
   const cfg = new File("~/Library/Preferences/ZereneStacker/zerenstk.launchcmd");
   let cmd = "";
   if (cfg.exists && cfg.open("r")) { cmd = cfg.read().replace(/[\r\n]+$/, ""); cfg.close(); }
@@ -173,6 +178,10 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
     '        </Sources>\n        <ProjectDispositionCode value="101" />\n        <Tasks length="2">\n' +
     zereneTaskXml(1, percentile) + zereneTaskXml(2, percentile) +
     '        </Tasks>\n      </Batch>\n    </Batches>\n  </BatchQueue>\n</ZereneStackerBatchScript>\n');
+
+  // Description: the last two path components of the stack folder, e.g. "2026-11-14/stack-021".
+  const parts = stackDir.split("/");
+  const description = parts.slice(Math.max(0, parts.length - 2)).join("/");
 
   const notify = function (msg: string): string {
     return "osascript -e 'display notification \"" + msg + "\" with title \"Zerene Stacker\"'";
@@ -191,6 +200,18 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
     'echo "zerene exit status: $?"',
     'P=$(ls "$DIR"/*" ZS PMax.tif" 2>/dev/null | head -n 1)',
     'D=$(ls "$DIR"/*" ZS DMap.tif" 2>/dev/null | head -n 1)',
+    // Description (IPTC Caption-Abstract + XMP dc:description) = "DATE/stack-nnn", via exiftool if installed.
+    "DESC=" + shq(description),
+    "WANT_DESC=" + (addDescription ? "1" : "0"),
+    'EXIFTOOL=$(command -v exiftool || ls /opt/homebrew/bin/exiftool /usr/local/bin/exiftool 2>/dev/null | head -n 1)',
+    'if [ "$WANT_DESC" != 1 ]; then',
+    '  :',
+    'elif [ -n "$EXIFTOOL" ] && [ -n "$P" ] && [ -n "$D" ]; then',
+    '  "$EXIFTOOL" -overwrite_original -IPTC:Caption-Abstract="$DESC" -XMP-dc:Description="$DESC" "$P" "$D" ||',
+    '    echo "exiftool failed; description not set"',
+    'elif [ -z "$EXIFTOOL" ]; then',
+    '  echo "exiftool not found; description not set"',
+    "fi",
     'if [ -n "$P" ] && [ -n "$D" ] && mv "$P" "$D" "$STACK"/; then',
     '  rm -rf "$DIR"',
     "  " + notify("PMax and DMap saved in the stack folder"),
@@ -213,10 +234,10 @@ function convertFolderAndAutoStack(): void {
     settings = chosen;
   }
   // Let the dialog finish closing and repaint before the work below blocks Bridge's UI thread.
-  app.scheduleTask("convertFolderNow(" + settings.percentile + ")", 300, false);
+  app.scheduleTask("convertFolderNow(" + settings.percentile + ", " + settings.addDescription + ")", 300, false);
 }
 
-function convertFolderNow(percentile: number): void {
+function convertFolderNow(percentile: number, addDescription: boolean): void {
   const dir = app.document.presentationPath;
   const folder = new Folder(dir);
   const files: string[] = [];
@@ -246,7 +267,7 @@ function convertFolderNow(percentile: number): void {
       if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
     }
     try {
-      autoStackInZerene(folder.fsName, tiffDir, stamp, percentile);
+      autoStackInZerene(folder.fsName, tiffDir, stamp, percentile, addDescription);
     } catch (e) {
       alert("Could not start Zerene auto-stack: " + e);
     }

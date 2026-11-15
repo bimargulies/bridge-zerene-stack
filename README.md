@@ -34,7 +34,10 @@ a single ES5 `.jsx` file.
    a temp folder, then run them detached. The shell script launches Zerene with the command saved in
    `~/Library/Preferences/ZereneStacker/zerenstk.launchcmd` plus
    `-noSplashScreen -exitOnBatchScriptCompletion -runMinimized -batchScript <file>`.
-4. **Tidy**: when Zerene exits, move the `ZS PMax` and `ZS DMap` outputs up into the stack folder and
+4. **Tidy**: when Zerene exits, set the IPTC Description (Caption-Abstract, plus XMP `dc:description`)
+   of both outputs to the last two components of the stack path, e.g. `2026-11-14/stack-021`. This
+   uses `exiftool` if it is installed (otherwise the step is skipped and logged), and can be turned off in
+   the settings dialog. Then move the `ZS PMax` and `ZS DMap` outputs up into the stack folder and
    delete the `TIFF-<timestamp>` folder — only if both outputs exist, and only if the folder's name
    starts with `TIFF-`. On failure the folder is kept and the notification says so. Everything the
    script does, including Zerene's console output, is logged to
