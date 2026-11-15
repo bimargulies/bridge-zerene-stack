@@ -1,0 +1,82 @@
+# bridge-zerene-stack
+
+An Adobe Bridge extension that takes a folder of focus-stack frames (RAW, DNG, JPEG, ...), converts
+them to TIFFs with Photoshop, runs [Zerene Stacker](https://www.zerenesystems.com/cms/stacker)
+unattended on the result — **PMax and DMap** — and leaves the two output images next to the originals.
+Zerene Stacker is started headless through its documented
+[Batch API](https://www.zerenesystems.com/cms/stacker/docs/batchapi) and exits when it is done.
+
+This is an independent hobby project. It is not affiliated with or endorsed by Zerene Systems.
+
+## What you get
+
+In Bridge, open a stack folder and choose **Tools › Photoshop › Convert Folder to TIFF + Auto-Stack in
+Zerene (PMax + DMap)**. You end up with, in the same folder:
+
+- `<date-time> ZS PMax.tif`
+- `<date-time> ZS DMap.tif`
+
+Both are 16-bit, LZW-compressed TIFFs, named by Zerene's own default scheme. The temporary TIFF
+folder is deleted once both outputs are in place, and a macOS notification tells you when it is done.
+Bridge and Photoshop stay usable while Zerene runs.
+
+## How it works
+
+Bridge extensions are ExtendScript startup scripts; this one is written in TypeScript and compiled to
+a single ES5 `.jsx` file.
+
+1. **Collect** the image files in the current Bridge folder, skipping anything that looks like a
+   Zerene output (a `ZS` token in the name), so a re-run never feeds old results back in.
+2. **Convert** them in Photoshop (sent over BridgeTalk): each file is opened with dialogs suppressed
+   and saved as an LZW TIFF into a fresh `TIFF-<timestamp>` subfolder. (Photoshop's *Image Processor*
+   has no way to run without its dialog, so this does the same open / save-as-TIFF / close itself.)
+3. **Stack**: write a Zerene batch script (`ZereneStackerBatchScript` XML) and a small shell script to
+   a temp folder, then run them detached. The shell script launches Zerene with the command saved in
+   `~/Library/Preferences/ZereneStacker/zerenstk.launchcmd` plus
+   `-noSplashScreen -exitOnBatchScriptCompletion -runMinimized -batchScript <file>`.
+4. **Tidy**: when Zerene exits, move the `ZS PMax` and `ZS DMap` outputs up into the stack folder and
+   delete the `TIFF-<timestamp>` folder — only if both outputs exist, and only if the folder's name
+   starts with `TIFF-`. On failure the folder is kept and the notification says so. Everything the
+   script does, including Zerene's console output, is logged to
+   `~/Library/Logs/BridgeZereneStack.log`.
+
+### What it relies on in Zerene
+
+From the Batch API page: `-batchScript`, `-exitOnBatchScriptCompletion`, `-runMinimized`,
+`-noSplashScreen`, a folder as `<Source>`, `ProjectDispositionCode` 101 (temporary project),
+`OutputImageDispositionCode` 2 (save in the source folder), `TaskIndicatorCode` 1 (PMax), and
+per-task `<Preferences>`.
+
+Found by experiment (not in the docs page, so worth checking if you are a Zerene developer):
+
+- `TaskIndicatorCode` **2** is *Align and Stack All (DMap)*.
+- `SaveImage.FileType=tif`, `SaveImage.BitsPerColor=16` and `SaveImage.CompressionType=LZW` work as
+  task preferences.
+- Without `DepthMapControl.UseFixedContrastThresholdPercentile=true` and
+  `DepthMapControl.ContrastThresholdPercentile=<n>` a DMap task stops to ask for the contrast threshold,
+  which defeats unattended use. These are set per task and are not written back to `zerenstk.cfg`.
+
+## Requirements
+
+- macOS, Adobe Bridge and Photoshop (developed against the 2027 versions), Zerene Stacker
+- Node.js and [pnpm](https://pnpm.io/) to build
+
+## Development
+
+```bash
+pnpm install
+pnpm run build        # writes dist/ZereneStack.jsx
+pnpm run install-ext  # build, then copy into each Bridge version's Startup Scripts folder
+```
+
+Restart Bridge, open a folder of frames, and use the menu item above. If the item does not appear
+under Tools › Photoshop in your Bridge version, change its location in `src/main.ts` to
+`at the end of Tools`.
+
+## License
+
+[BSD 3-Clause](./LICENSE).
+
+## AI usage
+
+I used Claude while developing this.

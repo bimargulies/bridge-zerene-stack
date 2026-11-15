@@ -1,0 +1,13 @@
+{
+	"name": "bridge-zerene-stack",
+	"private": true,
+	"type": "module",
+	"license": "BSD-3-Clause",
+	"scripts": {
+		"build": "tsc",
+		"install-ext": "pnpm run build && node scripts/install.mjs"
+	},
+	"devDependencies": {
+		"typescript": "^5.8.3"
+	}
+}

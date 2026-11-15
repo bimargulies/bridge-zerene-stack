@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES5",
+    "module": "none",
+    "lib": ["ES5"],
+    "noLib": false,
+    "outFile": "dist/ZereneStack.jsx",
+    "strict": true,
+    "alwaysStrict": false,
+    "removeComments": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
