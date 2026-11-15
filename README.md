@@ -78,7 +78,7 @@ under Tools › Photoshop in your Bridge version, change its location in `src/ma
 
 ## License
 
-[BSD 3-Clause](./LICENSE).
+[MIT](./LICENSE).
 
 ## AI usage
 

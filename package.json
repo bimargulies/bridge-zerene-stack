@@ -2,7 +2,7 @@
 	"name": "bridge-zerene-stack",
 	"private": true,
 	"type": "module",
-	"license": "BSD-3-Clause",
+	"license": "MIT",
 	"scripts": {
 		"build": "tsc",
 		"install-ext": "pnpm run build && node scripts/install.mjs"

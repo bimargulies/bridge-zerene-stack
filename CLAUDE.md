@@ -11,7 +11,7 @@ code. The README is written for the Zerene Systems people, so keep it accurate a
 ## Background decisions
 - Bridge cannot host UXP, so this is an **ExtendScript startup script**, compiled with `tsc` to ES5
   (TS 5.9 no longer offers ES3) into one file, `dist/ZereneStack.jsx`. Conventions copied from
-  `~/work/c41`: pnpm, `"type": "module"`, tab-indented `package.json`, BSD-3 LICENSE, README ending in
+  `~/work/c41`: pnpm, `"type": "module"`, tab-indented `package.json`, MIT LICENSE, README ending in
   an "AI usage" section. No vite/vitest.
 - Git commits end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. Commit only when
   Benson asks.
