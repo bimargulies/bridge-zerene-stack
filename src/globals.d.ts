@@ -4,7 +4,7 @@
 declare class File {
   encoding: string; lineFeed: string; write(s: string): boolean;
   constructor(path: string);
-  fsName: string; name: string; exists: boolean;
+  fsName: string; name: string; exists: boolean; parent: Folder;
   open(mode: string): boolean; read(): string; close(): boolean;
 }
 declare class Folder {

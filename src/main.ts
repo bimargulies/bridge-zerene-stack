@@ -276,6 +276,99 @@ function convertFolderNow(percentile: number, addDescription: boolean): void {
   bt.send(3600);
 }
 
+/**
+ * Plain launch of Zerene with a folder on its command line (documented: "If image files or
+ * directories are specified on the command line, then a new project will be immediately opened").
+ * Uses Zerene's own launch command; nothing is automated. (`open -a` does not pass files through.)
+ */
+function launchZerene(dir: string): void {
+  const cfg = new File("~/Library/Preferences/ZereneStacker/zerenstk.launchcmd");
+  let cmd = "";
+  if (cfg.exists && cfg.open("r")) { cmd = cfg.read().replace(/[\r\n]+$/, ""); cfg.close(); }
+  if (cmd === "") { alert("Zerene's launch command file was not found; start Zerene once normally, then retry."); return; }
+  const line = cmd + " " + shq(dir) + " </dev/null >/dev/null 2>&1 &";
+  app.system("/bin/sh -c " + shq(line) + " >/dev/null 2>&1 &");
+}
+
+/** Ask what to do with an existing zerene folder: "replace", "use", or "cancel". */
+function askExistingFolder(dir: string): string {
+  // @ts-ignore  ScriptUI
+  const w: any = new Window("dialog", "zerene folder exists");
+  w.orientation = "column";
+  w.alignChildren = "left";
+  w.add("statictext", undefined, "This folder already exists:");
+  w.add("statictext", undefined, dir);
+  w.add("statictext", undefined, "Replace it with fresh TIFFs of the selection, or use its TIFFs as-is?");
+  const buttons = w.add("group");
+  buttons.alignment = "right";
+  let answer = "cancel";
+  const replaceBtn = buttons.add("button", undefined, "Replace");
+  const useBtn = buttons.add("button", undefined, "Use as-is");
+  const cancelBtn = buttons.add("button", undefined, "Cancel");
+  replaceBtn.onClick = function () { answer = "replace"; w.close(1); };
+  useBtn.onClick = function () { answer = "use"; w.close(1); };
+  cancelBtn.onClick = function () { answer = "cancel"; w.close(0); };
+  w.show();
+  return answer;
+}
+
+/** Selected images -> TIFFs in <folder>/zerene, then open Zerene normally (no batch, no automation). */
+function openSelectionInZerene(): void {
+  const sel = app.document.selections;
+  const files: string[] = [];
+  let parent = "";
+  for (let i = 0; i < sel.length; i++) {
+    const f = sel[i].spec;
+    if (f instanceof File && IMAGE_EXT.test(decodeURI(f.name))) {
+      files.push(f.fsName);
+      if (parent === "") { parent = f.parent.fsName; }
+    }
+  }
+  if (files.length < 2) { alert("Select at least two image files in Bridge first."); return; }
+  const tiffDir = parent + "/zerene";
+  const existing = new Folder(tiffDir);
+  if (existing.exists) {
+    const choice = askExistingFolder(existing.fsName);
+    if (choice === "cancel") { return; }
+    if (choice === "use") {
+      const have: string[] = [];
+      const all = existing.getFiles();
+      for (let i = 0; i < all.length; i++) {
+        const nm = decodeURI(all[i].name);
+        if (all[i] instanceof File && /\.tiff?$/i.test(nm) && nm.charAt(0) !== ".") { have.push(all[i].fsName); }
+      }
+      if (have.length === 0) { alert("No TIFF files in " + existing.fsName); return; }
+      launchZerene(existing.fsName);
+      return;
+    }
+    // Replace: the folder name is fixed to "zerene" above, so this only ever removes that folder.
+    app.system("/bin/rm -rf " + shq(existing.fsName));
+    if (new Folder(tiffDir).exists) { alert("Could not remove " + existing.fsName); return; }
+  }
+
+  const bt = new BridgeTalk();
+  bt.target = "photoshop";
+  bt.body = "(" + convertToTiffSide.toString() + ")(" + (files as any).toSource() + ", " +
+    (tiffDir as any).toSource() + ");";
+  bt.onError = function (m) { alert("Photoshop error:\n" + m.body); };
+  bt.onResult = function (m) {
+    try {
+      if (m.body.indexOf("ERR:") === 0) { alert("TIFF conversion failed:\n" + m.body); return; }
+      const lines = m.body.split("\n");
+      const tiffs: string[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
+        if (lines[i] !== "") { tiffs.push(lines[i]); }
+      }
+      launchZerene(tiffDir);
+    } catch (e) {
+      alert("Could not start Zerene: " + e);
+    }
+  };
+  if (!BridgeTalk.isRunning("photoshop")) { BridgeTalk.launch("photoshop"); }
+  bt.send(3600);
+}
+
 if (BridgeTalk.appName === "bridge") {
   const item = MenuElement.create(
     "command",
@@ -291,4 +384,11 @@ if (BridgeTalk.appName === "bridge") {
     "zereneSettings"
   );
   cfgItem.onSelect = function () { showSettingsDialog(loadSettings(), "Save"); };
+  const selItem = MenuElement.create(
+    "command",
+    "Selection to TIFF in zerene folder + Open Zerene",
+    "at the end of Tools/Photoshop",
+    "zereneOpenSelection"
+  );
+  selItem.onSelect = openSelectionInZerene;
 }
