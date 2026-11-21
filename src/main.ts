@@ -291,7 +291,7 @@ function launchZerene(dir: string, description: string): void {
     'EXIFTOOL=$(command -v exiftool || ls /opt/homebrew/bin/exiftool /usr/local/bin/exiftool 2>/dev/null | head -n 1); ' +
     'if [ -n "$EXIFTOOL" ]; then "$EXIFTOOL" -overwrite_original -ext tif -ext tiff -IPTC:Caption-Abstract=' + shq(description) +
     " -XMP-dc:Description=" + shq(description) + " " + shq(dir) + "; fi; ";
-  const line = "{ " + tag + cmd + " " + shq(dir) + "; } </dev/null >/dev/null 2>&1 &";
+  const line = "{ " + tag + cmd + " -noSplashScreen " + shq(dir) + "; }</dev/null >/dev/null 2>&1 &";
   app.system("/bin/sh -c " + shq(line) + " >/dev/null 2>&1 &");
 }
 
@@ -319,7 +319,9 @@ function askExistingFolder(dir: string): string {
 
 /** Selected images -> TIFFs in <folder>/zerene, then open Zerene normally (no batch, no automation). */
 function openSelectionInZerene(): void {
-  const sel = app.document.selections;
+  let sel: any[] = [];
+  try { sel = app.document.selections; } catch (e) { sel = []; }
+  if (!sel || sel.length === 0) { alert("Nothing is selected. Select at least two image files in Bridge first."); return; }
   const files: string[] = [];
   let parent = "";
   for (let i = 0; i < sel.length; i++) {
@@ -394,7 +396,7 @@ if (BridgeTalk.appName === "bridge") {
   cfgItem.onSelect = function () { showSettingsDialog(loadSettings(), "Save"); };
   const selItem = MenuElement.create(
     "command",
-    "Selection to TIFF in zerene folder + Open Zerene",
+    "Selection to TIFF in Zerene Folder + Open Zerene",
     "at the end of Tools/Photoshop",
     "zereneOpenSelection"
   );
