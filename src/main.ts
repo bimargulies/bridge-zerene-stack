@@ -281,12 +281,17 @@ function convertFolderNow(percentile: number, addDescription: boolean): void {
  * directories are specified on the command line, then a new project will be immediately opened").
  * Uses Zerene's own launch command; nothing is automated. (`open -a` does not pass files through.)
  */
-function launchZerene(dir: string): void {
+function launchZerene(dir: string, description: string): void {
   const cfg = new File("~/Library/Preferences/ZereneStacker/zerenstk.launchcmd");
   let cmd = "";
   if (cfg.exists && cfg.open("r")) { cmd = cfg.read().replace(/[\r\n]+$/, ""); cfg.close(); }
   if (cmd === "") { alert("Zerene's launch command file was not found; start Zerene once normally, then retry."); return; }
-  const line = cmd + " " + shq(dir) + " </dev/null >/dev/null 2>&1 &";
+  // Optional: stamp the TIFFs' description (IPTC Caption-Abstract + XMP dc:description) first, via exiftool if installed.
+  const tag = description === "" ? "" :
+    'EXIFTOOL=$(command -v exiftool || ls /opt/homebrew/bin/exiftool /usr/local/bin/exiftool 2>/dev/null | head -n 1); ' +
+    'if [ -n "$EXIFTOOL" ]; then "$EXIFTOOL" -overwrite_original -ext tif -ext tiff -IPTC:Caption-Abstract=' + shq(description) +
+    " -XMP-dc:Description=" + shq(description) + " " + shq(dir) + "; fi; ";
+  const line = "{ " + tag + cmd + " " + shq(dir) + "; } </dev/null >/dev/null 2>&1 &";
   app.system("/bin/sh -c " + shq(line) + " >/dev/null 2>&1 &");
 }
 
@@ -326,6 +331,9 @@ function openSelectionInZerene(): void {
   }
   if (files.length < 2) { alert("Select at least two image files in Bridge first."); return; }
   const tiffDir = parent + "/zerene";
+  // Same as the full automation: last two components of the stack folder, e.g. "2026-11-14/stack-021".
+  const pparts = parent.split("/");
+  const description = loadSettings().addDescription ? pparts.slice(Math.max(0, pparts.length - 2)).join("/") : "";
   const existing = new Folder(tiffDir);
   if (existing.exists) {
     const choice = askExistingFolder(existing.fsName);
@@ -338,7 +346,7 @@ function openSelectionInZerene(): void {
         if (all[i] instanceof File && /\.tiff?$/i.test(nm) && nm.charAt(0) !== ".") { have.push(all[i].fsName); }
       }
       if (have.length === 0) { alert("No TIFF files in " + existing.fsName); return; }
-      launchZerene(existing.fsName);
+      launchZerene(existing.fsName, "");
       return;
     }
     // Replace: the folder name is fixed to "zerene" above, so this only ever removes that folder.
@@ -360,7 +368,7 @@ function openSelectionInZerene(): void {
         if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
         if (lines[i] !== "") { tiffs.push(lines[i]); }
       }
-      launchZerene(tiffDir);
+      launchZerene(tiffDir, description);
     } catch (e) {
       alert("Could not start Zerene: " + e);
     }
