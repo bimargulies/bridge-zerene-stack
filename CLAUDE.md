@@ -42,6 +42,11 @@ code. The README is written for the Zerene Systems people, so keep it accurate a
     the `ZS PMax`/`ZS DMap` tifs into the stack folder, `rm -rf`s the TIFF dir only if both exist and
     its name starts with `TIFF-`, posts a notification, and logs to
     `~/Library/Logs/BridgeZereneStack.log`.
+  - `convertToTiffs(files, tiffDir, settings, onDone)` picks the converter. With `dngConverter` set
+    (sibling project `~/work/dng-to-tiff`; generic in the README because not everyone has it) and all
+    frames DNG, `startDngConverter` runs it detached and `pollDngConverter` watches for a `.done` file
+    via `app.scheduleTask`. Any failure removes its TIFFs and falls back to `convertWithPhotoshop` for
+    the whole set, so a stack never mixes renderers.
   - `zereneTaskXml(code)`, `DMAP_CONTRAST_PERCENTILE` (30), `shq`, `xmlEsc`, `writeTextFile`.
 - `src/globals.d.ts` — minimal ambient types for Bridge/BridgeTalk/File/Folder.
 - `scripts/install.mjs` — copies `dist/ZereneStack.jsx` to every

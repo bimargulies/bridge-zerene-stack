@@ -74,12 +74,33 @@ function writeTextFile(path: string, text: string): void {
 // DMap contrast threshold, as a percentile. Without a fixed value Zerene stops to ask (default 30).
 const DEFAULT_PERCENTILE = 30;
 
-interface Settings { percentile: number; askEachTime: boolean; addDescription: boolean; }
+interface Settings {
+  percentile: number;
+  askEachTime: boolean;
+  addDescription: boolean;
+  /** Optional external DNG-to-TIFF executable. Empty means convert with Photoshop. */
+  dngConverter: string;
+  /** Optional .dcp camera profile passed to the converter with -dcp. */
+  dngProfile: string;
+}
 
 const SETTINGS_PATH = "~/Library/Application Support/Adobe/BridgeZereneStack.json";
 
+/** Encode a string as a JSON string literal. */
+function jsonStr(v: string): string { return '"' + v.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"'; }
+
+/** Read a top-level string value from the settings text ("" if absent). */
+function readJsonStr(text: string, key: string): string {
+  const m = new RegExp('"' + key + '"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"').exec(text);
+  return m ? m[1].replace(/\\(.)/g, "$1") : "";
+}
+
+function trimStr(v: string): string { return v.replace(/^\s+|\s+$/g, ""); }
+
 function loadSettings(): Settings {
-  const s: Settings = { percentile: DEFAULT_PERCENTILE, askEachTime: true, addDescription: true };
+  const s: Settings = {
+    percentile: DEFAULT_PERCENTILE, askEachTime: true, addDescription: true, dngConverter: "", dngProfile: ""
+  };
   try {
     const f = new File(SETTINGS_PATH);
     if (f.exists && f.open("r")) {
@@ -94,6 +115,8 @@ function loadSettings(): Settings {
       if (a) { s.askEachTime = a[1] === "true"; }
       const d = /"addDescription"\s*:\s*(true|false)/.exec(text);
       if (d) { s.addDescription = d[1] === "true"; }
+      s.dngConverter = readJsonStr(text, "dngConverter");
+      s.dngProfile = readJsonStr(text, "dngProfile");
     }
   } catch (e) { /* fall back to defaults */ }
   return s;
@@ -102,7 +125,8 @@ function loadSettings(): Settings {
 function saveSettings(s: Settings): void {
   writeTextFile(SETTINGS_PATH,
     '{\n  "percentile": ' + s.percentile + ',\n  "askEachTime": ' + (s.askEachTime ? "true" : "false") +
-    ',\n  "addDescription": ' + (s.addDescription ? "true" : "false") + '\n}\n');
+    ',\n  "addDescription": ' + (s.addDescription ? "true" : "false") +
+    ',\n  "dngConverter": ' + jsonStr(s.dngConverter) + ',\n  "dngProfile": ' + jsonStr(s.dngProfile) + '\n}\n');
 }
 
 /** Modal dialog for the settings. Returns the new (already saved) settings, or null if cancelled. */
@@ -120,6 +144,12 @@ function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
   desc.value = cur.addDescription;
   const ask = w.add("checkbox", undefined, "Ask each time");
   ask.value = cur.askEachTime;
+  w.add("statictext", undefined, "DNG converter executable (optional; empty = use Photoshop):");
+  const conv = w.add("edittext", undefined, cur.dngConverter);
+  conv.characters = 50;
+  w.add("statictext", undefined, "Camera profile for the converter, .dcp (optional):");
+  const prof = w.add("edittext", undefined, cur.dngProfile);
+  prof.characters = 50;
   const buttons = w.add("group");
   buttons.alignment = "right";
   const okBtn = buttons.add("button", undefined, okLabel, { name: "ok" });
@@ -129,7 +159,11 @@ function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
   okBtn.onClick = function () {
     const v = parseFloat(field.text);
     if (isNaN(v) || v < 0 || v > 100) { alert("Enter a number between 0 and 100."); return; }
-    result = { percentile: v, askEachTime: !!ask.value, addDescription: !!desc.value };
+    const dngConverter = trimStr(conv.text);
+    const dngProfile = trimStr(prof.text);
+    if (dngConverter !== "" && !new File(dngConverter).exists) { alert("DNG converter not found:\n" + dngConverter); return; }
+    if (dngProfile !== "" && !new File(dngProfile).exists) { alert("Camera profile not found:\n" + dngProfile); return; }
+    result = { percentile: v, askEachTime: !!ask.value, addDescription: !!desc.value, dngConverter: dngConverter, dngProfile: dngProfile };
     w.close(1);
   };
   cancelBtn.onClick = function () { w.close(0); };
@@ -138,6 +172,130 @@ function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
     try { saveSettings(result); } catch (e) { alert("Could not save settings: " + e); }
   }
   return result;
+}
+
+/** Shell command posting a macOS notification. msg must not contain quotes. */
+function notifyCmd(msg: string): string {
+  return "osascript -e 'display notification \"" + msg + "\" with title \"Zerene Stacker\"'";
+}
+
+/** Convert with Photoshop, then call onDone. Partial failures are reported and the run continues. */
+function convertWithPhotoshop(files: string[], tiffDir: string, onDone: () => void): void {
+  const bt = new BridgeTalk();
+  bt.target = "photoshop";
+  bt.body = "(" + convertToTiffSide.toString() + ")(" + (files as any).toSource() + ", " +
+    (tiffDir as any).toSource() + ");";
+  bt.onError = function (m) { alert("Photoshop error:\n" + m.body); };
+  bt.onResult = function (m) {
+    try {
+      if (m.body.indexOf("ERR:") === 0) { alert("TIFF conversion failed:\n" + m.body); return; }
+      const lines = m.body.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
+      }
+      onDone();
+    } catch (e) {
+      alert("Could not start Zerene: " + e);
+    }
+  };
+  if (!BridgeTalk.isRunning("photoshop")) { BridgeTalk.launch("photoshop"); }
+  bt.send(3600);
+}
+
+/**
+ * The files to give the DNG converter, or null if it cannot handle this set. A non-DNG file is
+ * tolerated only when it shares its name with a DNG (an earlier TIFF of the same frame); any other
+ * file means Photoshop converts everything, so one stack never mixes two renderers.
+ */
+function dngConverterInputs(files: string[]): string[] | null {
+  const stems: { [k: string]: boolean } = {};
+  const dngs: string[] = [];
+  for (let i = 0; i < files.length; i++) {
+    if (/\.dng$/i.test(files[i])) {
+      dngs.push(files[i]);
+      stems["k" + files[i].replace(/\.dng$/i, "").toLowerCase()] = true;
+    }
+  }
+  if (dngs.length === 0) { return null; }
+  for (let i = 0; i < files.length; i++) {
+    if (!/\.dng$/i.test(files[i]) && !stems["k" + files[i].replace(/\.[^.\/]+$/, "").toLowerCase()]) { return null; }
+  }
+  return dngs;
+}
+
+/** Log why the configured converter was not used, and tell the user. reason must not contain quotes. */
+function noteConverterFallback(reason: string): void {
+  const line = "echo " + shq("DNG converter not used: " + reason) + ' >>"$HOME/Library/Logs/BridgeZereneStack.log"; ' +
+    notifyCmd("Using Photoshop: " + reason);
+  app.system("/bin/sh -c " + shq(line) + " >/dev/null 2>&1 &");
+}
+
+interface DngJob { donePath: string; files: string[]; tiffDir: string; onDone: () => void; }
+const dngJobs: { [id: string]: DngJob } = {};
+let dngJobCounter = 0;
+
+/**
+ * Run the DNG converter detached so Bridge stays responsive; pollDngConverter picks up the result.
+ * The runner accepts the output only if the tool succeeded and wrote one TIFF per input; otherwise
+ * it removes what was written so the Photoshop fallback starts clean.
+ */
+function startDngConverter(inputs: string[], files: string[], tiffDir: string, s: Settings, onDone: () => void): void {
+  dngJobCounter++;
+  const id = "j" + new Date().getTime() + "-" + dngJobCounter;
+  const tmp = Folder.temp.fsName;
+  const shPath = tmp + "/zs-dng-" + id + ".sh";
+  const donePath = tmp + "/zs-dng-" + id + ".done";
+  const quoted: string[] = [];
+  for (let i = 0; i < inputs.length; i++) { quoted.push(shq(inputs[i])); }
+  const profile = s.dngProfile === "" ? "" : " -dcp " + shq(new File(s.dngProfile).fsName);
+  writeTextFile(shPath, [
+    "#!/bin/sh",
+    'exec >>"$HOME/Library/Logs/BridgeZereneStack.log" 2>&1',
+    'echo "=== $(date) DNG converter start (' + inputs.length + ' files)"',
+    "OUT=" + shq(tiffDir),
+    "DONE=" + shq(donePath),
+    'mkdir -p "$OUT"',
+    shq(new File(s.dngConverter).fsName) + profile + ' -out "$OUT" ' + quoted.join(" ") + " </dev/null",
+    "ST=$?",
+    'N=$(ls "$OUT"/*.tif 2>/dev/null | wc -l | tr -d " ")',
+    'if [ "$ST" = 0 ] && [ "$N" = "' + inputs.length + '" ]; then R=ok; else R=failed; rm -f "$OUT"/*.tif; fi',
+    'echo "DNG converter: $R (status $ST, $N TIFFs)"',
+    'printf %s "$R" > "$DONE.tmp" && mv "$DONE.tmp" "$DONE"',
+    'rm -f "$0"',
+    ""
+  ].join("\n"));
+  dngJobs[id] = { donePath: donePath, files: files, tiffDir: tiffDir, onDone: onDone };
+  app.system("/bin/sh " + shq(shPath) + " >/dev/null 2>&1 &");
+  app.scheduleTask('pollDngConverter("' + id + '")', 500, false);
+}
+
+function pollDngConverter(id: string): void {
+  const job = dngJobs[id];
+  if (!job) { return; }
+  const f = new File(job.donePath);
+  if (!f.exists) { app.scheduleTask('pollDngConverter("' + id + '")', 500, false); return; }
+  let status = "";
+  if (f.open("r")) { status = f.read(); f.close(); }
+  f.remove();
+  delete dngJobs[id];
+  if (status === "ok") {
+    try { job.onDone(); } catch (e) { alert("Could not start Zerene: " + e); }
+    return;
+  }
+  noteConverterFallback("the DNG converter failed, see the log");
+  convertWithPhotoshop(job.files, job.tiffDir, job.onDone);
+}
+
+/** Convert with the configured DNG converter when it can handle these files, otherwise with Photoshop. */
+function convertToTiffs(files: string[], tiffDir: string, s: Settings, onDone: () => void): void {
+  if (s.dngConverter === "") { convertWithPhotoshop(files, tiffDir, onDone); return; }
+  const inputs = dngConverterInputs(files);
+  if (inputs === null) {
+    noteConverterFallback("not every frame is a DNG");
+    convertWithPhotoshop(files, tiffDir, onDone);
+    return;
+  }
+  startDngConverter(inputs, files, tiffDir, s, onDone);
 }
 
 /** One Zerene batch task: save 16-bit LZW TIFF. Task codes: 1 = Align+Stack All (PMax), 2 = (DMap). */
@@ -183,9 +341,6 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
   const parts = stackDir.split("/");
   const description = parts.slice(Math.max(0, parts.length - 2)).join("/");
 
-  const notify = function (msg: string): string {
-    return "osascript -e 'display notification \"" + msg + "\" with title \"Zerene Stacker\"'";
-  };
   const lines = [
     "#!/bin/sh",
     // Keep everything (including Zerene's console output) in a log so failures are diagnosable.
@@ -214,9 +369,9 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
     "fi",
     'if [ -n "$P" ] && [ -n "$D" ] && mv "$P" "$D" "$STACK"/; then',
     '  rm -rf "$DIR"',
-    "  " + notify("PMax and DMap saved in the stack folder"),
+    "  " + notifyCmd("PMax and DMap saved in the stack folder"),
     "else",
-    "  " + notify("Stacking failed; the TIFF folder was kept"),
+    "  " + notifyCmd("Stacking failed; the TIFF folder was kept"),
     "fi",
     'echo "=== $(date) done"',
     "rm -f " + shq(xmlPath) + ' "$0"',
@@ -255,25 +410,9 @@ function convertFolderNow(percentile: number, addDescription: boolean): void {
     p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
   const tiffDir = folder.fsName + "/TIFF-" + stamp;
 
-  const bt = new BridgeTalk();
-  bt.target = "photoshop";
-  bt.body = "(" + convertToTiffSide.toString() + ")(" + (files as any).toSource() + ", " +
-    (tiffDir as any).toSource() + ");";
-  bt.onError = function (m) { alert("Photoshop error:\n" + m.body); };
-  bt.onResult = function (m) {
-    if (m.body.indexOf("ERR:") === 0) { alert("TIFF conversion failed:\n" + m.body); return; }
-    const lines = m.body.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
-    }
-    try {
-      autoStackInZerene(folder.fsName, tiffDir, stamp, percentile, addDescription);
-    } catch (e) {
-      alert("Could not start Zerene auto-stack: " + e);
-    }
-  };
-  if (!BridgeTalk.isRunning("photoshop")) { BridgeTalk.launch("photoshop"); }
-  bt.send(3600);
+  convertToTiffs(files, tiffDir, loadSettings(), function () {
+    autoStackInZerene(folder.fsName, tiffDir, stamp, percentile, addDescription);
+  });
 }
 
 /**
@@ -356,27 +495,7 @@ function openSelectionInZerene(): void {
     if (new Folder(tiffDir).exists) { alert("Could not remove " + existing.fsName); return; }
   }
 
-  const bt = new BridgeTalk();
-  bt.target = "photoshop";
-  bt.body = "(" + convertToTiffSide.toString() + ")(" + (files as any).toSource() + ", " +
-    (tiffDir as any).toSource() + ");";
-  bt.onError = function (m) { alert("Photoshop error:\n" + m.body); };
-  bt.onResult = function (m) {
-    try {
-      if (m.body.indexOf("ERR:") === 0) { alert("TIFF conversion failed:\n" + m.body); return; }
-      const lines = m.body.split("\n");
-      const tiffs: string[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
-        if (lines[i] !== "") { tiffs.push(lines[i]); }
-      }
-      launchZerene(tiffDir, description);
-    } catch (e) {
-      alert("Could not start Zerene: " + e);
-    }
-  };
-  if (!BridgeTalk.isRunning("photoshop")) { BridgeTalk.launch("photoshop"); }
-  bt.send(3600);
+  convertToTiffs(files, tiffDir, loadSettings(), function () { launchZerene(tiffDir, description); });
 }
 
 if (BridgeTalk.appName === "bridge") {

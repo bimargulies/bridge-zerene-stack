@@ -43,6 +43,21 @@ a single ES5 `.jsx` file.
    script does, including Zerene's console output, is logged to
    `~/Library/Logs/BridgeZereneStack.log`.
 
+### Optional: an external DNG converter
+
+By default Photoshop does the conversion. If you have a command-line DNG-to-TIFF converter, enter its
+path under **Tools › Photoshop › Zerene Stacker Settings...**, optionally with a `.dcp` camera profile
+matching your camera. It is called as:
+
+```
+<converter> [-dcp <profile.dcp>] -out <dir> file.dng ...
+```
+
+and must write one `<name>.tif` per input and exit 0. It runs in the background. Photoshop converts the
+whole set instead (with a notification and a line in the log) if any frame is not a DNG or the converter
+fails, so a stack never mixes two renderers. A non-DNG file with the same name as a DNG in the folder is
+treated as an earlier conversion of that frame and ignored. Leave the setting empty to always use Photoshop.
+
 ### What it relies on in Zerene
 
 From the Batch API page: `-batchScript`, `-exitOnBatchScriptCompletion`, `-runMinimized`,
@@ -62,6 +77,7 @@ Found by experiment (not in the docs page, so worth checking if you are a Zerene
 ## Requirements
 
 - macOS, Adobe Bridge and Photoshop (developed against the 2027 versions), Zerene Stacker
+- Optional: a DNG-to-TIFF command-line converter (see above)
 - Node.js and [pnpm](https://pnpm.io/) to build
 
 ## Development
