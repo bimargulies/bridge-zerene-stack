@@ -53,7 +53,7 @@ matching your camera. It is called as:
 <converter> [-dcp <profile.dcp>] -out <dir> file.dng ...
 ```
 
-and must write one `<name>.tif` per input and exit 0. It runs in the background. Photoshop converts the
+and must write one `<name>.tif` per input and exit 0. It runs in the background, with a progress window counting the TIFFs as they appear. Photoshop converts the
 whole set instead (with a notification and a line in the log) if any frame is not a DNG or the converter
 fails, so a stack never mixes two renderers. A non-DNG file with the same name as a DNG in the folder is
 treated as an earlier conversion of that frame and ignored. Leave the setting empty to always use Photoshop.

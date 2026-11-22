@@ -249,9 +249,50 @@ function noteConverterFallback(reason: string): void {
   app.system("/bin/sh -c " + shq(line) + " >/dev/null 2>&1 &");
 }
 
-interface DngJob { donePath: string; files: string[]; tiffDir: string; onDone: () => void; }
+interface DngProgress { win: any; bar: any; label: any; total: number; }
+interface DngJob { donePath: string; files: string[]; tiffDir: string; onDone: () => void; progress: DngProgress | null; }
 const dngJobs: { [id: string]: DngJob } = {};
 let dngJobCounter = 0;
+
+/** Non-modal progress window. Purely cosmetic: a UI failure here must never stop the conversion. */
+function openDngProgress(total: number): DngProgress | null {
+  try {
+    const win: any = new Window("palette", "Zerene Stacker");
+    win.orientation = "column";
+    win.alignChildren = "fill";
+    win.add("statictext", undefined, "Converting DNG files to TIFF...");
+    const bar = win.add("progressbar", undefined, 0, total);
+    bar.preferredSize = [360, 14];
+    const label = win.add("statictext", undefined, "0 of " + total + " TIFFs written");
+    label.characters = 30;
+    win.show();
+    return { win: win, bar: bar, label: label, total: total };
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Show how many TIFFs have appeared in tiffDir. */
+function updateDngProgress(p: DngProgress | null, tiffDir: string): void {
+  if (!p) { return; }
+  try {
+    const all = folderAt(tiffDir).getFiles();
+    let n = 0;
+    for (let i = 0; i < all.length; i++) {
+      const nm = decodeURI(all[i].name);
+      if (all[i] instanceof File && /\.tif$/i.test(nm) && nm.charAt(0) !== ".") { n++; }
+    }
+    n = Math.min(n, p.total);
+    p.bar.value = n;
+    p.label.text = n + " of " + p.total + " TIFFs written";
+    p.win.update();
+  } catch (e) { /* cosmetic */ }
+}
+
+function closeDngProgress(p: DngProgress | null): void {
+  if (!p) { return; }
+  try { p.win.close(); } catch (e) { /* cosmetic */ }
+}
 
 /**
  * Run the DNG converter detached so Bridge stays responsive; pollDngConverter picks up the result.
@@ -283,7 +324,7 @@ function startDngConverter(inputs: string[], files: string[], tiffDir: string, s
     'rm -f "$0"',
     ""
   ].join("\n"));
-  dngJobs[id] = { donePath: donePath, files: files, tiffDir: tiffDir, onDone: onDone };
+  dngJobs[id] = { donePath: donePath, files: files, tiffDir: tiffDir, onDone: onDone, progress: openDngProgress(inputs.length) };
   app.system("/bin/sh " + shq(shPath) + " >/dev/null 2>&1 &");
   app.scheduleTask('pollDngConverter("' + id + '")', 500, false);
 }
@@ -292,7 +333,12 @@ function pollDngConverter(id: string): void {
   const job = dngJobs[id];
   if (!job) { return; }
   const f = new File(job.donePath);
-  if (!f.exists) { app.scheduleTask('pollDngConverter("' + id + '")', 500, false); return; }
+  if (!f.exists) {
+    updateDngProgress(job.progress, job.tiffDir);
+    app.scheduleTask('pollDngConverter("' + id + '")', 500, false);
+    return;
+  }
+  closeDngProgress(job.progress);
   let status = "";
   if (f.open("r")) { status = f.read(); f.close(); }
   f.remove();
