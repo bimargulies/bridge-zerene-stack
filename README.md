@@ -10,8 +10,8 @@ This is an independent hobby project. It is not affiliated with or endorsed by Z
 
 ## What you get
 
-In Bridge, open a stack folder and choose **Tools › Photoshop › Convert Folder to TIFF + Auto-Stack in
-Zerene (PMax + DMap)**. You end up with, in the same folder:
+In Bridge, open a stack folder and choose **Tools › Zerene Stacker › Convert Folder to TIFF +
+Auto-Stack (PMax + DMap)**. You end up with, in the same folder:
 
 - `<date-time> ZS PMax.tif`
 - `<date-time> ZS DMap.tif`
@@ -46,7 +46,7 @@ a single ES5 `.jsx` file.
 ### Optional: an external DNG converter
 
 By default Photoshop does the conversion. If you have a command-line DNG-to-TIFF converter, enter its
-path under **Tools › Photoshop › Zerene Stacker Settings...**, optionally with a `.dcp` camera profile
+path under **Tools › Zerene Stacker › Settings...**, optionally with a `.dcp` camera profile
 matching your camera. It is called as:
 
 ```
@@ -88,9 +88,7 @@ pnpm run build        # writes dist/ZereneStack.jsx
 pnpm run install-ext  # build, then copy into each Bridge version's Startup Scripts folder
 ```
 
-Restart Bridge, open a folder of frames, and use the menu item above. If the item does not appear
-under Tools › Photoshop in your Bridge version, change its location in `src/main.ts` to
-`at the end of Tools`.
+Restart Bridge, open a folder of frames, and use the menu item above.
 
 ## License
 

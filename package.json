@@ -5,9 +5,14 @@
 	"license": "MIT",
 	"scripts": {
 		"build": "tsc",
-		"install-ext": "pnpm run build && node scripts/install.mjs"
+		"install-ext": "pnpm run build && node scripts/install.mjs",
+		"lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters --noImplicitReturns && eslint src && pnpm run build && node scripts/check-generated.mjs"
 	},
 	"devDependencies": {
-		"typescript": "^5.8.3"
+		"acorn": "^8.19.0",
+		"eslint": "^10.15.0",
+		"eslint-plugin-es-x": "^10.1.0",
+		"typescript": "^5.8.3",
+		"typescript-eslint": "^8.73.0"
 	}
 }

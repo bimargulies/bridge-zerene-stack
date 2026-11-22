@@ -36,3 +36,5 @@ declare var app: {
 };
 declare function alert(msg: string): void;
 declare class Window { constructor(type: string, title?: string); }
+// Photoshop globals, used only by the function that runs inside Photoshop.
+declare const DialogModes: any, TiffSaveOptions: any, SaveOptions: any, TIFFEncoding: any;

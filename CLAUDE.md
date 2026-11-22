@@ -81,9 +81,9 @@ code. The README is written for the Zerene Systems people, so keep it accurate a
 - Bridge `File.name`/`Folder.name` are **URL-encoded** (`%20`): `decodeURI` before testing names.
 - **Regexes inside a function sent to Photoshop as text get mangled**; use string methods there.
 - `app.system()` returns the exit status (x256), not output; shell env has the user's `HOME`/`PATH`.
-- Non-ASCII in menu labels gets mangled; keep the `.jsx` ASCII. Menu location
-  `at the end of Tools/Photoshop` may not exist in every Bridge version; fallback is
-  `at the end of Tools`.
+- Non-ASCII in menu labels gets mangled; keep the `.jsx` ASCII. Items go in a submenu by its bare id
+  (`at the end of zereneMenu`); `Tools/zereneMenu` silently falls back to the top of Tools.
+- `new File(path)` decodes `%XX`, so a literal `%20` in a path is corrupted: use `encodeURI(path)`.
 - Exceptions in a BridgeTalk `onResult` handler can vanish silently; wrap in try/catch + `alert`.
 
 ## Testing / debugging without clicking the menu
@@ -106,8 +106,10 @@ code. The README is written for the Zerene Systems people, so keep it accurate a
 
 ## Commands
 - `pnpm install`, `pnpm run build`, `pnpm run install-ext` (build + install), then restart Bridge.
-- Use: open a stack folder in Bridge, then Tools > Photoshop > "Convert Folder to TIFF + Auto-Stack in
-  Zerene (PMax + DMap)".
+- `pnpm run lint`: tsc, ESLint (ES3 API rules), an ES3 parse of the build, and ShellCheck/xmllint on the
+  generated scripts (needs `brew install shellcheck`).
+- Use: open a stack folder in Bridge, then Tools > Zerene Stacker > "Convert Folder to TIFF + Auto-Stack
+  (PMax + DMap)".
 
 ## Status
 - Works end to end on Benson's real stacks (verified by Benson after the line-ending and DMap-threshold

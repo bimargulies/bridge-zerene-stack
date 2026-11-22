@@ -1,4 +1,4 @@
-// Bridge startup script: Tools > Photoshop > "Convert Folder to TIFF + Auto-Stack in Zerene (PMax + DMap)"
+// Bridge startup script: adds a Tools > Zerene Stacker submenu.
 // Converts the current Bridge folder to TIFFs with Photoshop, runs Zerene Stacker headless via its
 // documented Batch API (PMax + DMap, 16-bit LZW TIFF), and saves the outputs in the folder.
 
@@ -9,35 +9,44 @@
  * no dialog. Returns the converted TIFF paths (one per line, then an optional "WARN:" block), or "ERR:..." if nothing could be converted.
  */
 function convertToTiffSide(paths: string[], tiffDir: string): string {
-  // @ts-ignore  Photoshop globals
   const A: any = app, DM: any = DialogModes, F: any = File, Fo: any = Folder;
-  // @ts-ignore
   const TSO: any = TiffSaveOptions, SO: any = SaveOptions, IC: any = TIFFEncoding;
   const oldDialogs = A.displayDialogs;
   A.displayDialogs = DM.NO;
   const failed: string[] = [];
   const done: string[] = [];
+  const saved: { [k: string]: boolean } = {};
   try {
-    const out = new Fo(tiffDir);
-    if (!out.exists) { out.create(); }
+    // encodeURI: the File/Folder constructors decode %XX, which would corrupt a literal "%20" in a path.
+    // Bridge creates tiffDir first: Folder.create() here decodes again and would make a stray folder.
+    if (!new Fo(encodeURI(tiffDir)).exists) { return "ERR:Output folder is missing: " + tiffDir; }
     for (let i = 0; i < paths.length; i++) {
+      let doc: any = null;
       try {
-        const src = new F(paths[i]);
-        const doc = A.open(src);
+        const src = new F(encodeURI(paths[i]));
         // File.name is URL-encoded; avoid regex here (this function is sent as text).
         const nm = decodeURI(src.name);
         const dot = nm.lastIndexOf(".");
         const base = dot > 0 ? nm.substring(0, dot) : nm;
+        // a.dng and a.tif would both become a.tif; never let one frame silently overwrite another.
+        if (saved["k" + base.toLowerCase()]) {
+          failed.push(paths[i] + " (same name as a frame already converted)");
+          continue;
+        }
+        doc = A.open(src);
         const opts = new TSO();
         opts.imageCompression = IC.TIFFLZW;
         opts.layers = false;
         opts.embedColorProfile = true;
         const dest = tiffDir + "/" + base + ".tif";
-        doc.saveAs(new F(dest), opts, true);
-        doc.close(SO.DONOTSAVECHANGES);
+        doc.saveAs(new F(encodeURI(dest)), opts, true);
+        saved["k" + base.toLowerCase()] = true;
         done.push(dest);
       } catch (e) {
         failed.push(paths[i] + " (" + e + ")");
+      } finally {
+        // Also on a failed save, so a bad frame does not leave a full-size document open.
+        if (doc) { try { doc.close(SO.DONOTSAVECHANGES); } catch (e2) { /* already closed */ } }
       }
     }
   } finally {
@@ -60,6 +69,15 @@ function shq(v: string): string { return "'" + v.replace(/'/g, "'\\''") + "'"; }
 function xmlEsc(v: string): string {
   return v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+
+/** File/Folder for a literal path. The constructors decode %XX, so a literal "%" must be encoded first. */
+function fileAt(path: string): File { return new File(encodeURI(path)); }
+function folderAt(path: string): Folder { return new Folder(encodeURI(path)); }
+
+// Shell lines that send a script's output to the log, starting a new log past 10 MB (keeps one old log).
+const LOG_SETUP =
+  'L="$HOME/Library/Logs/BridgeZereneStack.log"; ' +
+  'if [ -f "$L" ] && [ "$(wc -c <"$L")" -gt 10485760 ]; then mv -f "$L" "$L.1"; fi; exec >>"$L" 2>&1';
 
 function writeTextFile(path: string, text: string): void {
   const f = new File(path);
@@ -106,7 +124,7 @@ function loadSettings(): Settings {
     if (f.exists && f.open("r")) {
       const text = f.read();
       f.close();
-      const p = /"percentile"\s*:\s*([0-9.]+)/.exec(text);
+      const p = /"percentile"\s*:\s*([0-9.eE+-]+)/.exec(text);
       if (p) {
         const v = parseFloat(p[1]);
         if (v >= 0 && v <= 100) { s.percentile = v; }
@@ -131,7 +149,6 @@ function saveSettings(s: Settings): void {
 
 /** Modal dialog for the settings. Returns the new (already saved) settings, or null if cancelled. */
 function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
-  // @ts-ignore  ScriptUI
   const w: any = new Window("dialog", "Zerene Stacker settings");
   w.orientation = "column";
   w.alignChildren = "left";
@@ -157,12 +174,13 @@ function showSettingsDialog(cur: Settings, okLabel: string): Settings | null {
   // Close explicitly: the implicit close of "ok"/"cancel" buttons left the dialog on screen in Bridge.
   let result: Settings | null = null;
   okBtn.onClick = function () {
-    const v = parseFloat(field.text);
+    const typed = trimStr(field.text);
+    const v = typed === "" ? NaN : Number(typed);  // Number, not parseFloat: reject "30abc"
     if (isNaN(v) || v < 0 || v > 100) { alert("Enter a number between 0 and 100."); return; }
     const dngConverter = trimStr(conv.text);
     const dngProfile = trimStr(prof.text);
-    if (dngConverter !== "" && !new File(dngConverter).exists) { alert("DNG converter not found:\n" + dngConverter); return; }
-    if (dngProfile !== "" && !new File(dngProfile).exists) { alert("Camera profile not found:\n" + dngProfile); return; }
+    if (dngConverter !== "" && !fileAt(dngConverter).exists) { alert("DNG converter not found:\n" + dngConverter); return; }
+    if (dngProfile !== "" && !fileAt(dngProfile).exists) { alert("Camera profile not found:\n" + dngProfile); return; }
     result = { percentile: v, askEachTime: !!ask.value, addDescription: !!desc.value, dngConverter: dngConverter, dngProfile: dngProfile };
     w.close(1);
   };
@@ -181,6 +199,7 @@ function notifyCmd(msg: string): string {
 
 /** Convert with Photoshop, then call onDone. Partial failures are reported and the run continues. */
 function convertWithPhotoshop(files: string[], tiffDir: string, onDone: () => void): void {
+  if (Number(app.system("/bin/mkdir -p " + shq(tiffDir))) !== 0) { alert("Could not create " + tiffDir); return; }
   const bt = new BridgeTalk();
   bt.target = "photoshop";
   bt.body = "(" + convertToTiffSide.toString() + ")(" + (files as any).toSource() + ", " +
@@ -247,15 +266,15 @@ function startDngConverter(inputs: string[], files: string[], tiffDir: string, s
   const donePath = tmp + "/zs-dng-" + id + ".done";
   const quoted: string[] = [];
   for (let i = 0; i < inputs.length; i++) { quoted.push(shq(inputs[i])); }
-  const profile = s.dngProfile === "" ? "" : " -dcp " + shq(new File(s.dngProfile).fsName);
+  const profile = s.dngProfile === "" ? "" : " -dcp " + shq(fileAt(s.dngProfile).fsName);
   writeTextFile(shPath, [
     "#!/bin/sh",
-    'exec >>"$HOME/Library/Logs/BridgeZereneStack.log" 2>&1',
+    LOG_SETUP,
     'echo "=== $(date) DNG converter start (' + inputs.length + ' files)"',
     "OUT=" + shq(tiffDir),
     "DONE=" + shq(donePath),
     'mkdir -p "$OUT"',
-    shq(new File(s.dngConverter).fsName) + profile + ' -out "$OUT" ' + quoted.join(" ") + " </dev/null",
+    shq(fileAt(s.dngConverter).fsName) + profile + ' -out "$OUT" ' + quoted.join(" ") + " </dev/null",
     "ST=$?",
     'N=$(ls "$OUT"/*.tif 2>/dev/null | wc -l | tr -d " ")',
     'if [ "$ST" = 0 ] && [ "$N" = "' + inputs.length + '" ]; then R=ok; else R=failed; rm -f "$OUT"/*.tif; fi',
@@ -344,7 +363,7 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
   const lines = [
     "#!/bin/sh",
     // Keep everything (including Zerene's console output) in a log so failures are diagnosable.
-    'exec >>"$HOME/Library/Logs/BridgeZereneStack.log" 2>&1',
+    LOG_SETUP,
     'echo "=== $(date) auto-stack start"',
     "STACK=" + shq(stackDir),
     "DIR=" + shq(tiffDir),
@@ -352,7 +371,8 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
     'case "$(basename "$DIR")" in TIFF-*) ;; *) exit 1;; esac',
     cmd + " -noSplashScreen -exitOnBatchScriptCompletion -runMinimized -batchScript " + shq(xmlPath) +
       " </dev/null",
-    'echo "zerene exit status: $?"',
+    "ZST=$?",
+    'echo "zerene exit status: $ZST"',
     'P=$(ls "$DIR"/*" ZS PMax.tif" 2>/dev/null | head -n 1)',
     'D=$(ls "$DIR"/*" ZS DMap.tif" 2>/dev/null | head -n 1)',
     // Description (IPTC Caption-Abstract + XMP dc:description) = "DATE/stack-nnn", via exiftool if installed.
@@ -367,7 +387,8 @@ function autoStackInZerene(stackDir: string, tiffDir: string, stamp: string, per
     'elif [ -z "$EXIFTOOL" ]; then',
     '  echo "exiftool not found; description not set"',
     "fi",
-    'if [ -n "$P" ] && [ -n "$D" ] && mv "$P" "$D" "$STACK"/; then',
+    // A non-zero exit can leave a truncated output, so keep the source TIFFs in that case.
+    'if [ "$ZST" = 0 ] && [ -n "$P" ] && [ -n "$D" ] && mv "$P" "$D" "$STACK"/; then',
     '  rm -rf "$DIR"',
     "  " + notifyCmd("PMax and DMap saved in the stack folder"),
     "else",
@@ -389,7 +410,9 @@ function convertFolderAndAutoStack(): void {
     settings = chosen;
   }
   // Let the dialog finish closing and repaint before the work below blocks Bridge's UI thread.
-  app.scheduleTask("convertFolderNow(" + settings.percentile + ", " + settings.addDescription + ")", 300, false);
+  // Exceptions in a scheduled task vanish silently, so report them here.
+  app.scheduleTask("try { convertFolderNow(" + settings.percentile + ", " + settings.addDescription +
+    '); } catch (e) { alert("Zerene Stacker: " + e); }', 300, false);
 }
 
 function convertFolderNow(percentile: number, addDescription: boolean): void {
@@ -420,7 +443,7 @@ function convertFolderNow(percentile: number, addDescription: boolean): void {
  * directories are specified on the command line, then a new project will be immediately opened").
  * Uses Zerene's own launch command; nothing is automated. (`open -a` does not pass files through.)
  */
-function launchZerene(dir: string, description: string): void {
+function launchZerene(dir: string, description: string, frames?: string[]): void {
   const cfg = new File("~/Library/Preferences/ZereneStacker/zerenstk.launchcmd");
   let cmd = "";
   if (cfg.exists && cfg.open("r")) { cmd = cfg.read().replace(/[\r\n]+$/, ""); cfg.close(); }
@@ -430,19 +453,23 @@ function launchZerene(dir: string, description: string): void {
     'EXIFTOOL=$(command -v exiftool || ls /opt/homebrew/bin/exiftool /usr/local/bin/exiftool 2>/dev/null | head -n 1); ' +
     'if [ -n "$EXIFTOOL" ]; then "$EXIFTOOL" -overwrite_original -ext tif -ext tiff -IPTC:Caption-Abstract=' + shq(description) +
     " -XMP-dc:Description=" + shq(description) + " " + shq(dir) + "; fi; ";
-  const line = "{ " + tag + cmd + " -noSplashScreen " + shq(dir) + "; }</dev/null >/dev/null 2>&1 &";
+  // An explicit frame list when some of the folder's files must be left out; otherwise the folder.
+  const quotedFrames: string[] = [];
+  if (frames) { for (let i = 0; i < frames.length; i++) { quotedFrames.push(shq(frames[i])); } }
+  const target = frames ? quotedFrames.join(" ") : shq(dir);
+  const line = "{ " + LOG_SETUP + '; echo "=== $(date) open Zerene on "' + shq(dir) + "; " + tag +
+    cmd + " -noSplashScreen " + target + '; echo "zerene exit status: $?"; }</dev/null >/dev/null 2>&1 &';
   app.system("/bin/sh -c " + shq(line) + " >/dev/null 2>&1 &");
 }
 
 /** Ask what to do with an existing zerene folder: "replace", "use", or "cancel". */
 function askExistingFolder(dir: string): string {
-  // @ts-ignore  ScriptUI
   const w: any = new Window("dialog", "zerene folder exists");
   w.orientation = "column";
   w.alignChildren = "left";
   w.add("statictext", undefined, "This folder already exists:");
   w.add("statictext", undefined, dir);
-  w.add("statictext", undefined, "Replace it with fresh TIFFs of the selection, or use its TIFFs as-is?");
+  w.add("statictext", undefined, "Replace moves it to the Trash and makes fresh TIFFs of the selection. Use as-is keeps it.");
   const buttons = w.add("group");
   buttons.alignment = "right";
   let answer = "cancel";
@@ -475,24 +502,28 @@ function openSelectionInZerene(): void {
   // Same as the full automation: last two components of the stack folder, e.g. "2026-11-14/stack-021".
   const pparts = parent.split("/");
   const description = loadSettings().addDescription ? pparts.slice(Math.max(0, pparts.length - 2)).join("/") : "";
-  const existing = new Folder(tiffDir);
+  const existing = folderAt(tiffDir);
   if (existing.exists) {
     const choice = askExistingFolder(existing.fsName);
     if (choice === "cancel") { return; }
     if (choice === "use") {
+      // Earlier Zerene outputs in this folder are results, not frames: leave them out of the project.
       const have: string[] = [];
+      let skippedOutputs = 0;
       const all = existing.getFiles();
       for (let i = 0; i < all.length; i++) {
         const nm = decodeURI(all[i].name);
-        if (all[i] instanceof File && /\.tiff?$/i.test(nm) && nm.charAt(0) !== ".") { have.push(all[i].fsName); }
+        if (all[i] instanceof File && /\.tiff?$/i.test(nm) && nm.charAt(0) !== ".") {
+          if (ZERENE_OUTPUT.test(nm)) { skippedOutputs++; } else { have.push(all[i].fsName); }
+        }
       }
-      if (have.length === 0) { alert("No TIFF files in " + existing.fsName); return; }
-      launchZerene(existing.fsName, "");
+      if (have.length === 0) { alert("No source TIFF files in " + existing.fsName); return; }
+      launchZerene(existing.fsName, "", skippedOutputs > 0 ? have : undefined);
       return;
     }
-    // Replace: the folder name is fixed to "zerene" above, so this only ever removes that folder.
-    app.system("/bin/rm -rf " + shq(existing.fsName));
-    if (new Folder(tiffDir).exists) { alert("Could not remove " + existing.fsName); return; }
+    // Replace: recoverable on purpose, since the folder may hold saved outputs or projects. No rm fallback.
+    app.system("/usr/bin/trash " + shq(existing.fsName));
+    if (folderAt(tiffDir).exists) { alert("Could not move this folder to the Trash:\n" + existing.fsName); return; }
   }
 
   convertToTiffs(files, tiffDir, loadSettings(), function () { launchZerene(tiffDir, description); });
