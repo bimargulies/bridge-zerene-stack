@@ -499,25 +499,28 @@ function openSelectionInZerene(): void {
 }
 
 if (BridgeTalk.appName === "bridge") {
+  // One "Zerene Stacker" submenu under Tools holds all three commands.
+  MenuElement.create("menu", "Zerene Stacker", "at the end of Tools", "zereneMenu");
+  const where = "at the end of zereneMenu";
   const item = MenuElement.create(
     "command",
-    "Convert Folder to TIFF + Auto-Stack in Zerene (PMax + DMap)",
-    "at the end of Tools/Photoshop",
+    "Convert Folder to TIFF + Auto-Stack (PMax + DMap)",
+    where,
     "zereneAutoStack"
   );
   item.onSelect = convertFolderAndAutoStack;
-  const cfgItem = MenuElement.create(
-    "command",
-    "Zerene Stacker Settings...",
-    "at the end of Tools/Photoshop",
-    "zereneSettings"
-  );
-  cfgItem.onSelect = function () { showSettingsDialog(loadSettings(), "Save"); };
   const selItem = MenuElement.create(
     "command",
     "Selection to TIFF in Zerene Folder + Open Zerene",
-    "at the end of Tools/Photoshop",
+    where,
     "zereneOpenSelection"
   );
   selItem.onSelect = openSelectionInZerene;
+  const cfgItem = MenuElement.create(
+    "command",
+    "Settings...",
+    where,
+    "zereneSettings"
+  );
+  cfgItem.onSelect = function () { showSettingsDialog(loadSettings(), "Save"); };
 }
