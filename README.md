@@ -20,6 +20,11 @@ Both are 16-bit, LZW-compressed TIFFs, named by Zerene's own default scheme. The
 folder is deleted once both outputs are in place, and a macOS notification tells you when it is done.
 Bridge and Photoshop stay usable while Zerene runs.
 
+To add frames to a stack you are already working on, select them and choose **Tools › Zerene Stacker ›
+Add Selection to Existing Zerene Folder**. They are converted to TIFFs in the `zerene` subfolder of
+the current folder. Frames already there are skipped, never overwritten, and Zerene is not started or
+told about the new files.
+
 ## How it works
 
 Bridge extensions are ExtendScript startup scripts; this one is written in TypeScript and compiled to

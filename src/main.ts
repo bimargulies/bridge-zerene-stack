@@ -198,16 +198,20 @@ function notifyCmd(msg: string): string {
 }
 
 /** Convert with Photoshop, then call onDone. Partial failures are reported and the run continues. */
-function convertWithPhotoshop(files: string[], tiffDir: string, onDone: () => void): void {
+function convertWithPhotoshop(files: string[], tiffDir: string, onDone: () => void, onFail?: () => void): void {
   if (Number(app.system("/bin/mkdir -p " + shq(tiffDir))) !== 0) { alert("Could not create " + tiffDir); return; }
   const bt = new BridgeTalk();
   bt.target = "photoshop";
   bt.body = "(" + convertToTiffSide.toString() + ")(" + (files as any).toSource() + ", " +
     (tiffDir as any).toSource() + ");";
-  bt.onError = function (m) { alert("Photoshop error:\n" + m.body); };
+  bt.onError = function (m) { alert("Photoshop error:\n" + m.body); if (onFail) { onFail(); } };
   bt.onResult = function (m) {
     try {
-      if (m.body.indexOf("ERR:") === 0) { alert("TIFF conversion failed:\n" + m.body); return; }
+      if (m.body.indexOf("ERR:") === 0) {
+        alert("TIFF conversion failed:\n" + m.body);
+        if (onFail) { onFail(); }
+        return;
+      }
       const lines = m.body.split("\n");
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].indexOf("WARN:") === 0) { alert("Some files were skipped:\n" + lines.slice(i).join("\n")); break; }
@@ -250,7 +254,9 @@ function noteConverterFallback(reason: string): void {
 }
 
 interface DngProgress { win: any; bar: any; label: any; total: number; }
-interface DngJob { donePath: string; files: string[]; tiffDir: string; onDone: () => void; progress: DngProgress | null; }
+interface DngJob {
+  donePath: string; files: string[]; tiffDir: string; onDone: () => void; onFail?: () => void; progress: DngProgress | null;
+}
 const dngJobs: { [id: string]: DngJob } = {};
 let dngJobCounter = 0;
 
@@ -299,7 +305,9 @@ function closeDngProgress(p: DngProgress | null): void {
  * The runner accepts the output only if the tool succeeded and wrote one TIFF per input; otherwise
  * it removes what was written so the Photoshop fallback starts clean.
  */
-function startDngConverter(inputs: string[], files: string[], tiffDir: string, s: Settings, onDone: () => void): void {
+function startDngConverter(
+  inputs: string[], files: string[], tiffDir: string, s: Settings, onDone: () => void, onFail?: () => void
+): void {
   dngJobCounter++;
   const id = "j" + new Date().getTime() + "-" + dngJobCounter;
   const tmp = Folder.temp.fsName;
@@ -324,7 +332,9 @@ function startDngConverter(inputs: string[], files: string[], tiffDir: string, s
     'rm -f "$0"',
     ""
   ].join("\n"));
-  dngJobs[id] = { donePath: donePath, files: files, tiffDir: tiffDir, onDone: onDone, progress: openDngProgress(inputs.length) };
+  dngJobs[id] = {
+    donePath: donePath, files: files, tiffDir: tiffDir, onDone: onDone, onFail: onFail, progress: openDngProgress(inputs.length)
+  };
   app.system("/bin/sh " + shq(shPath) + " >/dev/null 2>&1 &");
   app.scheduleTask('pollDngConverter("' + id + '")', 500, false);
 }
@@ -348,19 +358,19 @@ function pollDngConverter(id: string): void {
     return;
   }
   noteConverterFallback("the DNG converter failed, see the log");
-  convertWithPhotoshop(job.files, job.tiffDir, job.onDone);
+  convertWithPhotoshop(job.files, job.tiffDir, job.onDone, job.onFail);
 }
 
 /** Convert with the configured DNG converter when it can handle these files, otherwise with Photoshop. */
-function convertToTiffs(files: string[], tiffDir: string, s: Settings, onDone: () => void): void {
-  if (s.dngConverter === "") { convertWithPhotoshop(files, tiffDir, onDone); return; }
+function convertToTiffs(files: string[], tiffDir: string, s: Settings, onDone: () => void, onFail?: () => void): void {
+  if (s.dngConverter === "") { convertWithPhotoshop(files, tiffDir, onDone, onFail); return; }
   const inputs = dngConverterInputs(files);
   if (inputs === null) {
     noteConverterFallback("not every frame is a DNG");
-    convertWithPhotoshop(files, tiffDir, onDone);
+    convertWithPhotoshop(files, tiffDir, onDone, onFail);
     return;
   }
-  startDngConverter(inputs, files, tiffDir, s, onDone);
+  startDngConverter(inputs, files, tiffDir, s, onDone, onFail);
 }
 
 /** One Zerene batch task: save 16-bit LZW TIFF. Task codes: 1 = Align+Stack All (PMax), 2 = (DMap). */
@@ -484,6 +494,14 @@ function convertFolderNow(percentile: number, addDescription: boolean): void {
   });
 }
 
+/** Shell snippet stamping the TIFFs in dir with a description, via exiftool if installed. "" if no description. */
+function describeTiffsCmd(dir: string, description: string): string {
+  return description === "" ? "" :
+    'EXIFTOOL=$(command -v exiftool || ls /opt/homebrew/bin/exiftool /usr/local/bin/exiftool 2>/dev/null | head -n 1); ' +
+    'if [ -n "$EXIFTOOL" ]; then "$EXIFTOOL" -overwrite_original -ext tif -ext tiff -IPTC:Caption-Abstract=' + shq(description) +
+    " -XMP-dc:Description=" + shq(description) + " " + shq(dir) + "; fi; ";
+}
+
 /**
  * Plain launch of Zerene with a folder on its command line (documented: "If image files or
  * directories are specified on the command line, then a new project will be immediately opened").
@@ -495,10 +513,7 @@ function launchZerene(dir: string, description: string, frames?: string[]): void
   if (cfg.exists && cfg.open("r")) { cmd = cfg.read().replace(/[\r\n]+$/, ""); cfg.close(); }
   if (cmd === "") { alert("Zerene's launch command file was not found; start Zerene once normally, then retry."); return; }
   // Optional: stamp the TIFFs' description (IPTC Caption-Abstract + XMP dc:description) first, via exiftool if installed.
-  const tag = description === "" ? "" :
-    'EXIFTOOL=$(command -v exiftool || ls /opt/homebrew/bin/exiftool /usr/local/bin/exiftool 2>/dev/null | head -n 1); ' +
-    'if [ -n "$EXIFTOOL" ]; then "$EXIFTOOL" -overwrite_original -ext tif -ext tiff -IPTC:Caption-Abstract=' + shq(description) +
-    " -XMP-dc:Description=" + shq(description) + " " + shq(dir) + "; fi; ";
+  const tag = describeTiffsCmd(dir, description);
   // An explicit frame list when some of the folder's files must be left out; otherwise the folder.
   const quotedFrames: string[] = [];
   if (frames) { for (let i = 0; i < frames.length; i++) { quotedFrames.push(shq(frames[i])); } }
@@ -575,8 +590,63 @@ function openSelectionInZerene(): void {
   convertToTiffs(files, tiffDir, loadSettings(), function () { launchZerene(tiffDir, description); });
 }
 
+/**
+ * Shell command moving finished TIFFs from the staging folder into the zerene folder, never
+ * overwriting. The staging folder is removed only if everything moved; otherwise it is kept.
+ */
+function moveStagedTiffsCmd(staging: string, zereneDir: string, description: string): string {
+  return "{ " + LOG_SETUP + '; echo "=== $(date) add frames to "' + shq(zereneDir) + "; " +
+    "S=" + shq(staging) + "; Z=" + shq(zereneDir) + "; " + describeTiffsCmd(staging, description) +
+    'for F in "$S"/*.tif; do [ -e "$Z/$(basename "$F")" ] || mv "$F" "$Z"/; done; ' +
+    'if rmdir "$S"; then ' + notifyCmd("Added the TIFFs to the zerene folder") +
+    "; else " + notifyCmd("Some TIFFs could not be added; see the adding folder") + "; fi; }</dev/null >/dev/null 2>&1 &";
+}
+
+/** Selected images -> TIFFs added to the existing <folder>/zerene. Does not start or notify Zerene. */
+function addSelectionToZereneFolder(): void {
+  let sel: any[] = [];
+  try { sel = app.document.selections; } catch (e) { sel = []; }
+  const selected: File[] = [];
+  for (let i = 0; i < (sel ? sel.length : 0); i++) {
+    const f = sel[i].spec;
+    if (f instanceof File && IMAGE_EXT.test(decodeURI(f.name))) { selected.push(f); }
+  }
+  if (selected.length === 0) { alert("Select at least one image file in Bridge first."); return; }
+  const parent = selected[0].parent.fsName;
+  const zereneDir = parent + "/zerene";
+  const existing = folderAt(zereneDir);
+  if (!existing.exists) { alert("There is no zerene folder here yet:\n" + zereneDir); return; }
+
+  // A frame already in the folder is left alone, so retouching or a re-render there is never replaced.
+  const have: { [k: string]: boolean } = {};
+  const all = existing.getFiles();
+  for (let i = 0; i < all.length; i++) {
+    const nm = decodeURI(all[i].name);
+    if (all[i] instanceof File && /\.tiff?$/i.test(nm)) { have["k" + nm.replace(/\.[^.]+$/, "").toLowerCase()] = true; }
+  }
+  const files: string[] = [];
+  const skipped: string[] = [];
+  for (let i = 0; i < selected.length; i++) {
+    const nm = decodeURI(selected[i].name);
+    if (have["k" + nm.replace(/\.[^.]+$/, "").toLowerCase()]) { skipped.push(nm); } else { files.push(selected[i].fsName); }
+  }
+  if (files.length === 0) { alert("Every selected image is already in the zerene folder."); return; }
+  if (skipped.length > 0) { alert("Already in the zerene folder, skipping:\n" + skipped.join("\n")); }
+
+  const settings = loadSettings();
+  const parts = parent.split("/");
+  const description = settings.addDescription ? parts.slice(Math.max(0, parts.length - 2)).join("/") : "";
+  // Convert in a fresh subfolder: the DNG converter's failure path deletes every TIFF in its output folder.
+  const staging = existing.fsName + "/adding-" + new Date().getTime();
+  convertToTiffs(files, staging, settings, function () {
+    app.system("/bin/sh -c " + shq(moveStagedTiffsCmd(staging, existing.fsName, description)) + " >/dev/null 2>&1 &");
+  }, function () {
+    app.system("/bin/rmdir " + shq(staging) + " >/dev/null 2>&1");
+  });
+}
+
 if (BridgeTalk.appName === "bridge") {
-  // One "Zerene Stacker" submenu under Tools holds all three commands.
+  // One "Zerene Stacker" submenu under Tools holds all the commands.
   MenuElement.create("menu", "Zerene Stacker", "at the end of Tools", "zereneMenu");
   const where = "at the end of zereneMenu";
   const item = MenuElement.create(
@@ -593,6 +663,13 @@ if (BridgeTalk.appName === "bridge") {
     "zereneOpenSelection"
   );
   selItem.onSelect = openSelectionInZerene;
+  const addItem = MenuElement.create(
+    "command",
+    "Add Selection to Existing Zerene Folder",
+    where,
+    "zereneAddSelection"
+  );
+  addItem.onSelect = addSelectionToZereneFolder;
   const cfgItem = MenuElement.create(
     "command",
     "Settings...",
